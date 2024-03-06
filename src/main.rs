@@ -1,102 +1,75 @@
-use std::collections::{BTreeMap, HashMap};
-use std::fs::File;
-use std::io::{Lines, BufRead, BufReader};
+use std::fs::*;
 use std::time::Instant;
+use std::io::{BufRead, BufReader, Lines, Read, Seek, SeekFrom};
 
-struct Results {
-    min: f32,
-    max: f32,
-    sum: f32,
-    count: u32
+const BUFFER_SIZE_KB: usize = 6400000;
+
+fn read_file(path: &str){
+
+    let file: File = File::open(path).expect("Error reading file");
+    let mut reader: BufReader<File> = BufReader::new(file);
+    let mut buffer = [0; BUFFER_SIZE_KB];
+
+    loop {
+        
+        
+        let bytes_read = reader.read(&mut buffer).expect("Error reading chunk");
+
+        // End of File
+        if bytes_read == 0 {
+            break;
+        }
+
+        let last_newline = buffer[..bytes_read].into_iter().rposition(|&x| x == 10);
+
+        match last_newline {
+            Some(index) => {
+
+                // Splits the chunk at the nearest \n character to ensure data isn't missed
+                let (chunk, rest) = buffer[..bytes_read].split_at(index + 1);
+                //sender.send(chunk.to_vec()).await?;
+                
+                //Move the reader back to the start of the last \n so that it is included in the next chunk
+                let reader_offset:i64 = 0 - rest.len() as i64;
+                reader.seek(SeekFrom::Current(reader_offset)).unwrap();
+
+                print_u8_array(&chunk);
+            },
+            None => {
+                //sender.send(buffer[..bytes_read].to_vec()).await?;
+                print_u8_array(&buffer[..bytes_read]);
+            }
+        }
+
+    }
 }
 
-const BUFFER_CAPACITY: usize = 64000;
-
-fn read_file() -> Lines<BufReader<File>>{
-    let file = match File::open("data/measurements_10m.txt") {
+fn read_file2(path: &str){
+    let file = match File::open(path) {
         Ok(f) => f,
         Err(e) => panic!("{}", e)
     };
 
-    let reader = BufReader::with_capacity(BUFFER_CAPACITY,file);
+    let reader = BufReader::with_capacity(BUFFER_SIZE_KB,file);
 
     let lines: Lines<BufReader<File>> = reader.lines();
 
-    return lines;
-}
-
-fn calculate(lines: Lines<BufReader<File>>) -> HashMap<String, Results> {
-    let mut city_map: HashMap<String, Results> = HashMap::new();
-    
-    for line in lines {
-        let test = line.unwrap();
-        let mut split_line = test.split(";");
-
-        let city = split_line.next().unwrap().to_string();
-        let temp: f32 = split_line.next().unwrap().parse().unwrap();
-
-        let current_measurement = city_map.entry(city.clone()).or_insert(Results {
-            min: f32::INFINITY,
-            max: f32::NEG_INFINITY,
-            sum: 0.0,
-            count: 0,
-        });
-
-        if temp < current_measurement.min {
-            current_measurement.min = temp;
-        }
-
-        if temp > current_measurement.max {
-            current_measurement.max = temp;
-        }
-
-        current_measurement.sum += temp;
-        current_measurement.count += 1;
+    for line in lines{
+        println!("{}", line.unwrap());
     }
-
-    return city_map;
-    
 }
 
-
-fn print_results(results: BTreeMap<String, Results>){
-
-    let mut result: String = String::new();
-
-    result += "{";
-
-    for (key, value) in results.iter() {
-        result += format!("{}=", key.as_str()).as_str();
-        result += format!("{:.1}/", value.min).as_str();
-        
-        let avg = value.sum / value.count as f32;
-
-        result += format!("{:.1}/", avg).as_str();
-        result += format!("{:.1}", value.max).as_str();
-        
-        result += ", ";
+fn print_u8_array(bytes: &[u8]){
+    if let Ok(string) = std::str::from_utf8(&bytes) {
+        print!("{}", string);
+    } else {
+        println!("Invalid UTF-8 data");
     }
-
-    result.pop();
-    result.pop();
-
-    result += "}";
-
-    //fs::write("result.txt", &result).expect("Error writing to file");
-    println!("{}", result);
-
 }
-
-fn main() {
-    
+fn main(){
     let start_time = Instant::now();
 
-    let lines: Lines<BufReader<File>> = read_file();
-
-    let results: HashMap<String, Results> = calculate(lines);
-    let sorted_results: BTreeMap<String, Results> = results.into_iter().collect();
-    
-    print_results(sorted_results);
+    read_file2("data/measurements_1m.txt");
 
     let end_time = Instant::now();
     let elapsed_time = end_time.duration_since(start_time);
