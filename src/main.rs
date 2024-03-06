@@ -17,7 +17,7 @@ struct Results {
     count: u32
 }
 
-const BUFFER_CAPACITY: usize = 64000 * 10;
+const BUFFER_CAPACITY: usize = 64000;
 
 fn read_file() -> Lines<BufReader<File>>{
     let file = match File::open("data/measurements_10m.txt") {
