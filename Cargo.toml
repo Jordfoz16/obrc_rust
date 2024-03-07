@@ -11,3 +11,5 @@ debug = true
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
+log = "0.4.14"
+simple_logger = "4.0.0"
