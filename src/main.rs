@@ -1,10 +1,12 @@
 use std::fs::File;
+use std::sync::Arc;
 use std::time::Instant;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::collections::{BTreeMap, HashMap};
-use tokio::sync::{watch, oneshot};
+use rayon::result;
+use tokio::sync::{watch, oneshot, mpsc};
 use tokio::task;
-use log::{Level,info,error};
+use log::{error, info, warn, Level};
 
 
 struct Results {
@@ -16,7 +18,7 @@ struct Results {
 
 const BUFFER_SIZE_KB: usize = 8;
 const CHUNK_SIZE_KB: usize = 256;
-const THREAD_COUNT: usize = 4;
+const THREAD_COUNT: usize = 2;
 
 async fn read_file(path: &str, sender: watch::Sender<Vec<u8>>) {
 
@@ -62,31 +64,32 @@ async fn read_file(path: &str, sender: watch::Sender<Vec<u8>>) {
     drop(sender);
 }
 
-async fn process_chunk(mut receiver: watch::Receiver<Vec<u8>>, id: usize) {
+async fn process_chunk(mut receiver: watch::Receiver<Vec<u8>>, sender: mpsc::Sender<HashMap<String, Results>>, id: usize) {
+    
     while receiver.changed().await.is_ok() {
-        let (send, recv) = oneshot::channel();
         let chunk = receiver.borrow_and_update().to_owned();
-
-        rayon::spawn(move || {
-
+        let sender_cell = sender.clone();
         
-        info!("Thread {}: Processing chunk with size {}", id, chunk.len());
-        
-        let lines = chunk.lines();
-        let mut city_map: HashMap<String, Results> = HashMap::new();
+        let (send, recv) = oneshot::channel();
+        rayon::spawn( move || {
+            
+            info!("Thread {}: Processing chunk with size {}", id, chunk.len());
+            
+            let lines = chunk.lines();
+            let mut city_map: HashMap<String, Results> = HashMap::new();
+            
+            for line in lines {
+                let line_string = line.unwrap();
+                let mut split_line = line_string.split(";");
 
-        for line in lines {
-            let line_string = line.unwrap();
-            let mut split_line = line_string.split(";");
+                let city = split_line.next().unwrap().to_string();
+                let temp: f32 = split_line.next().unwrap().parse().unwrap();
 
-            let city = split_line.next().unwrap().to_string();
-            let temp: f32 = split_line.next().unwrap().parse().unwrap();
-
-            let current_measurement = city_map.entry(city.clone()).or_insert(Results {
-                min: f32::INFINITY,
-                max: f32::NEG_INFINITY,
-                sum: 0.0,
-                count: 0,
+                let current_measurement = city_map.entry(city.clone()).or_insert(Results {
+                    min: f32::INFINITY,
+                    max: f32::NEG_INFINITY,
+                    sum: 0.0,
+                    count: 0,
             });
 
             if temp < current_measurement.min {
@@ -100,15 +103,49 @@ async fn process_chunk(mut receiver: watch::Receiver<Vec<u8>>, id: usize) {
             current_measurement.sum += temp;
             current_measurement.count += 1;
 
-        }
+            }
 
-        let sorted_results: BTreeMap<String, Results> = city_map.into_iter().collect();
-        let _ = send.send(sorted_results);
+            //let sorted_results: BTreeMap<String, Results> = city_map.into_iter().collect();
+            let _ = send.send(city_map);
         });
-
-        recv.await.expect("Panic in rayon::spawn");
+        let test: HashMap<String, Results> = recv.await.expect("error");
+        sender_cell.send(test).await.expect("Error sending");
+        drop(sender_cell);
     } 
     
+    drop(sender);
+}
+
+async fn combined_results(mut receiver: mpsc::Receiver<HashMap<String, Results>>){
+
+    let mut final_results: HashMap<String, Results> = HashMap::new();
+
+    while let Some(result) = receiver.recv().await {
+        info!("Recieved {:?} results", result.len());
+        for (k, v) in result{
+            if final_results.contains_key(&k){
+                let final_result = final_results.get_mut(&k).unwrap();
+
+                if v.min < final_result.min {
+                    final_result.min = v.min;
+                }
+
+                if v.max > final_result.max {
+                    final_result.max = v.max;
+                }
+
+                final_result.count += v.count;
+                final_result.sum += v.sum;
+            }else{
+                final_results.insert(k, v);
+            }
+            
+        }
+    }
+
+    warn!("finished getting data");
+    let sorted_results: BTreeMap<String, Results> = final_results.into_iter().collect();
+    print_results(sorted_results);
 }
 
 fn print_results(results: BTreeMap<String, Results>){
@@ -156,21 +193,27 @@ async fn main(){
     simple_logger::init_with_level(Level::Error).unwrap();
 
     let file_sender = watch::channel(Vec::new());
+    let (result_sender, mut result_receiver) = mpsc::channel(100);
 
     let processing_receivers: Vec<_> = (0..THREAD_COUNT)
         .map(|id| {
             let processing_receiver = file_sender.1.clone();
-            task::spawn(process_chunk(processing_receiver, id))
+            task::spawn(process_chunk(processing_receiver, result_sender.clone(), id))
         })
         .collect();
 
     let read_task = task::spawn(read_file(path, file_sender.0));
+    let result_combined_task = task::spawn(combined_results(result_receiver));
+    
+    drop(result_sender);
 
-    let _ = tokio::join!(read_task, async {
+    let _ = tokio::join!(read_task, result_combined_task, async {
         for handle in processing_receivers {
             handle.await.expect("Thread join error");
         }
     });
+
+    
 
     let end_time = Instant::now();
     let elapsed_time = end_time.duration_since(start_time);
