@@ -2,7 +2,7 @@ use std::fs::File;
 use std::time::Instant;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::collections::{BTreeMap, HashMap};
-use tokio::sync::watch;
+use tokio::sync::{watch, oneshot};
 use tokio::task;
 use log::{Level,info,error};
 
@@ -64,7 +64,12 @@ async fn read_file(path: &str, sender: watch::Sender<Vec<u8>>) {
 
 async fn process_chunk(mut receiver: watch::Receiver<Vec<u8>>, id: usize) {
     while receiver.changed().await.is_ok() {
-        let chunk = receiver.borrow_and_update();
+        let (send, recv) = oneshot::channel();
+        let chunk = receiver.borrow_and_update().to_owned();
+
+        rayon::spawn(move || {
+
+        
         info!("Thread {}: Processing chunk with size {}", id, chunk.len());
         
         let lines = chunk.lines();
@@ -98,7 +103,12 @@ async fn process_chunk(mut receiver: watch::Receiver<Vec<u8>>, id: usize) {
         }
 
         let sorted_results: BTreeMap<String, Results> = city_map.into_iter().collect();
-    }    
+        let _ = send.send(sorted_results);
+        });
+
+        recv.await.expect("Panic in rayon::spawn");
+    } 
+    
 }
 
 fn print_results(results: BTreeMap<String, Results>){
