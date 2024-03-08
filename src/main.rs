@@ -57,8 +57,9 @@ async fn read_file(path: &str, sender: mpsc::Sender<Vec<u8>>) {
                 };
             }
         }
-
     }
+
+    drop(sender);
 }
 
 async fn process_chunk(mut receiver: mpsc::Receiver<Vec<u8>>) {
@@ -94,6 +95,7 @@ async fn process_chunk(mut receiver: mpsc::Receiver<Vec<u8>>) {
         }
 
         let sorted_results: BTreeMap<String, Results> = city_map.into_iter().collect();
+       
     }    
 }
 
@@ -111,20 +113,46 @@ async fn print_u8_array(mut receiver: mpsc::Receiver<Vec<u8>>){
 #[tokio::main]
 async fn main(){
     let start_time = Instant::now();
-    let path = "data/measurements_10m.txt";
-    simple_logger::init_with_level(Level::Info).unwrap();
+    let path = "data/measurements_4.txt";
+    simple_logger::init_with_level(Level::Debug).unwrap();
 
     let (sender, mut receiver) = mpsc::channel(100);
+    let (sender1, mut receiver1) = mpsc::channel(100);
+    let (sender2, mut receiver2) = mpsc::channel(100);
+
 
     let read_task = task::spawn(async move {
-        read_file(path, sender).await;  
+        read_file(path, sender).await;
     });
 
-    let process_task = task::spawn(async move {
-        process_chunk(receiver).await;  
+    let process_task1 = task::spawn(async move {
+        process_chunk(receiver1).await;
     });
 
-    tokio::join!(read_task, process_task);
+    let process_task2 = task::spawn(async move {
+        process_chunk(receiver2).await;
+    });
+
+    let mut toggle: bool = false;
+
+    while let Some(chunk) = receiver.recv().await {
+        if toggle {
+            match sender1.send(chunk.clone()).await{
+                Ok(_) => info!("Sent job to thread 1"),
+                Err(e) => log::error!("{}", e)
+            };
+        } else {
+            match sender2.send(chunk.clone()).await{
+                Ok(_) => info!("Sent job to thread 2"),
+                Err(e) => log::error!("{}", e)
+            };
+        }
+        
+        toggle = !toggle;
+    }
+
+
+    let test = tokio::join!(read_task, process_task1, process_task2);
 
     let end_time = Instant::now();
     let elapsed_time = end_time.duration_since(start_time);
