@@ -1,10 +1,10 @@
 use std::fs::File;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use rayon::result;
-use tokio::sync::{watch, oneshot, mpsc};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task;
 use log::{error, info, warn, Level};
 
@@ -18,7 +18,7 @@ struct Results {
 
 const BUFFER_SIZE_KB: usize = 8;
 const CHUNK_SIZE_KB: usize = 256;
-const THREAD_COUNT: usize = 2;
+const THREAD_COUNT: usize = 4;
 
 async fn read_file(path: &str, sender: watch::Sender<Vec<u8>>) {
 
@@ -34,9 +34,17 @@ async fn read_file(path: &str, sender: watch::Sender<Vec<u8>>) {
             break;
         }
 
-        let last_newline = buffer[..bytes_read].into_iter().rposition(|&x| x == 10);
+        let mut split_index: Option<usize> = None;
 
-        match last_newline {
+        if *buffer.last().unwrap() == 0 as u8 {
+            split_index = None;
+        }else if *buffer.last().unwrap() == 10 as u8{
+            split_index = None;
+        }else {
+            split_index = buffer[..bytes_read].into_iter().rposition(|&x| x == 10);
+        }
+
+        match split_index {
             Some(index) => {
 
                 // Splits the chunk at the nearest \n character to ensure data isn't missed
@@ -47,7 +55,7 @@ async fn read_file(path: &str, sender: watch::Sender<Vec<u8>>) {
                 reader.seek(SeekFrom::Current(reader_offset)).unwrap();
 
                 match sender.send(chunk.to_vec()){
-                    Ok(_) => info!("Chunk Size {} Sent", chunk.len()),
+                    Ok(_) => info!("Part-Chunk Size {} Sent", chunk.len()),
                     Err(e) => log::error!("{}", e)
                 };
             },
@@ -60,13 +68,11 @@ async fn read_file(path: &str, sender: watch::Sender<Vec<u8>>) {
             }
         }
     }
-
-    drop(sender);
 }
 
 async fn process_chunk(mut receiver: watch::Receiver<Vec<u8>>, sender: mpsc::Sender<HashMap<String, Results>>, id: usize) {
     
-    while receiver.changed().await.is_ok() {
+    while !receiver.changed().await.is_err() {
         let chunk = receiver.borrow_and_update().to_owned();
         let sender_cell = sender.clone();
         
@@ -112,20 +118,20 @@ async fn process_chunk(mut receiver: watch::Receiver<Vec<u8>>, sender: mpsc::Sen
         sender_cell.send(test).await.expect("Error sending");
         drop(sender_cell);
     } 
-    
-    drop(sender);
 }
 
 async fn combined_results(mut receiver: mpsc::Receiver<HashMap<String, Results>>){
 
     let mut final_results: HashMap<String, Results> = HashMap::new();
-
+    
     while let Some(result) = receiver.recv().await {
         info!("Recieved {:?} results", result.len());
         for (k, v) in result{
             if final_results.contains_key(&k){
                 let final_result = final_results.get_mut(&k).unwrap();
-
+                if k == "İzmir"{
+                    error!("Temp = {}", v.min);
+                }
                 if v.min < final_result.min {
                     final_result.min = v.min;
                 }
@@ -136,6 +142,8 @@ async fn combined_results(mut receiver: mpsc::Receiver<HashMap<String, Results>>
 
                 final_result.count += v.count;
                 final_result.sum += v.sum;
+                
+                
             }else{
                 final_results.insert(k, v);
             }
@@ -143,7 +151,7 @@ async fn combined_results(mut receiver: mpsc::Receiver<HashMap<String, Results>>
         }
     }
 
-    warn!("finished getting data");
+    info!("Finished combining data");
     let sorted_results: BTreeMap<String, Results> = final_results.into_iter().collect();
     print_results(sorted_results);
 }
@@ -189,11 +197,11 @@ fn print_results(results: BTreeMap<String, Results>){
 #[tokio::main]
 async fn main(){
     let start_time = Instant::now();
-    let path = "data/measurements_1b.txt";
-    simple_logger::init_with_level(Level::Error).unwrap();
+    let path = "data/measurements_4.txt";
+    simple_logger::init_with_level(Level::Debug).unwrap();
 
     let file_sender = watch::channel(Vec::new());
-    let (result_sender, mut result_receiver) = mpsc::channel(100);
+    let (result_sender, mut result_receiver) = mpsc::channel(5000);
 
     let processing_receivers: Vec<_> = (0..THREAD_COUNT)
         .map(|id| {
@@ -210,6 +218,7 @@ async fn main(){
     let _ = tokio::join!(read_task, result_combined_task, async {
         for handle in processing_receivers {
             handle.await.expect("Thread join error");
+            
         }
     });
 
