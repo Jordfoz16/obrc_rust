@@ -1,12 +1,10 @@
-use std::fs::*;
+use std::fs::File;
 use std::time::Instant;
-use std::io::{BufRead, BufReader, Lines, Read, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::collections::{BTreeMap, HashMap};
-use tokio::sync::mpsc;
 use tokio::sync::watch;
-use tokio::{task, time};
-use std::io::Result;
-use log::*;
+use tokio::task;
+use log::{Level,info,error};
 
 
 struct Results {
@@ -18,6 +16,7 @@ struct Results {
 
 const BUFFER_SIZE_KB: usize = 8;
 const CHUNK_SIZE_KB: usize = 256;
+const THREAD_COUNT: usize = 4;
 
 async fn read_file(path: &str, sender: watch::Sender<Vec<u8>>) {
 
@@ -63,9 +62,11 @@ async fn read_file(path: &str, sender: watch::Sender<Vec<u8>>) {
     drop(sender);
 }
 
-async fn process_chunk(mut receiver: watch::Receiver<Vec<u8>>) {
+async fn process_chunk(mut receiver: watch::Receiver<Vec<u8>>, id: usize) {
     while receiver.changed().await.is_ok() {
         let chunk = receiver.borrow_and_update();
+        info!("Thread {}: Processing chunk with size {}", id, chunk.len());
+        
         let lines = chunk.lines();
         let mut city_map: HashMap<String, Results> = HashMap::new();
 
@@ -128,35 +129,41 @@ fn print_results(results: BTreeMap<String, Results>){
 
 }
 
-async fn print_u8_array(mut receiver: mpsc::Receiver<Vec<u8>>){
-    while let Some(value) = receiver.recv().await {
-        if let Ok(string) = std::str::from_utf8(&value) {
-            print!("{}", string);
-        } else {
-            println!("Invalid UTF-8 data");
-        }
-    }
-}
+// async fn print_u8_array(mut receiver: mpsc::Receiver<Vec<u8>>){
+//     while let Some(value) = receiver.recv().await {
+//         if let Ok(string) = std::str::from_utf8(&value) {
+//             print!("{}", string);
+//         } else {
+//             println!("Invalid UTF-8 data");
+//         }
+//     }
+// }
 
 #[tokio::main]
 async fn main(){
     let start_time = Instant::now();
-    let path = "data/measurements_10m.txt";
-    simple_logger::init_with_level(Level::Debug).unwrap();
+    let path = "data/measurements_1b.txt";
+    simple_logger::init_with_level(Level::Error).unwrap();
 
     let file_sender = watch::channel(Vec::new());
 
-    let processing_receiver1 = file_sender.1.clone();
-    let processing_receiver2 = file_sender.1.clone();
+    let processing_receivers: Vec<_> = (0..THREAD_COUNT)
+        .map(|id| {
+            let processing_receiver = file_sender.1.clone();
+            task::spawn(process_chunk(processing_receiver, id))
+        })
+        .collect();
 
     let read_task = task::spawn(read_file(path, file_sender.0));
-    let process_task1 = task::spawn(process_chunk(processing_receiver1));
-    let process_task2 = task::spawn(process_chunk(processing_receiver2));
 
-    let _ = tokio::try_join!(read_task, process_task1, process_task2).expect("error threads");
+    let _ = tokio::join!(read_task, async {
+        for handle in processing_receivers {
+            handle.await.expect("Thread join error");
+        }
+    });
 
     let end_time = Instant::now();
     let elapsed_time = end_time.duration_since(start_time);
-    warn!("Elapsed time: {:?}", elapsed_time);
+    error!("Elapsed time: {:?}", elapsed_time);
 
 }
