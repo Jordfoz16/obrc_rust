@@ -1,12 +1,10 @@
 use std::fs::File;
-use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
-use std::collections::{BTreeMap, HashMap, HashSet};
-use rayon::result;
-use tokio::sync::{mpsc, oneshot, watch};
+use std::collections::{BTreeMap, HashMap};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task;
-use log::{error, info, warn, Level};
+use log::{error, info, Level};
 
 
 struct Results {
@@ -15,20 +13,27 @@ struct Results {
     sum: f32,
     count: u32
 }
+#[derive(Clone)]
+struct Chunk {
+    id: usize,
+    chunk: Vec<u8>
+}
 
 const BUFFER_SIZE_KB: usize = 8;
 const CHUNK_SIZE_KB: usize = 256;
-const THREAD_COUNT: usize = 4;
+const THREAD_COUNT: usize = 12;
 
-async fn read_file(path: &str, sender: watch::Sender<Vec<u8>>) {
+async fn read_file(path: &str, tx: async_channel::Sender<Chunk>) {
 
     let file: File = File::open(path).expect("Error");
     let mut reader: BufReader<File> = BufReader::with_capacity(BUFFER_SIZE_KB * 1024, file);
     let mut buffer = [0; CHUNK_SIZE_KB * 1024];
+    let mut count = 0;
+
+    tx.downgrade();
 
     loop {
         let bytes_read = reader.read(&mut buffer).expect("Error reading chunk");
-
         // End of File
         if bytes_read == 0 {
             break;
@@ -54,34 +59,37 @@ async fn read_file(path: &str, sender: watch::Sender<Vec<u8>>) {
                 let reader_offset:i64 = 0 - rest.len() as i64;
                 reader.seek(SeekFrom::Current(reader_offset)).unwrap();
 
-                match sender.send(chunk.to_vec()){
-                    Ok(_) => info!("Part-Chunk Size {} Sent", chunk.len()),
-                    Err(e) => log::error!("{}", e)
-                };
+                //chunk.to_vec()
+                let _ = tx.send(Chunk { id: count, chunk: chunk.to_vec() }).await;
+                //info!("Queue Length {}", tx.len());
+                
             },
             None => {
                 
-                match sender.send(buffer[..bytes_read].to_vec()){
-                    Ok(_) => info!("Chunk Size {} Sent", buffer[..bytes_read].len()),
-                    Err(e) => log::error!("{}", e)
-                };
+                //buffer[..bytes_read].to_vec()
+                let _ = tx.send(Chunk { id: count, chunk: buffer[..bytes_read].to_vec() }).await;
+                //info!("Queue Length {}", tx.len());
             }
         }
+
+        //info!("Chunk Created: {}", count);
+        count += 1;
     }
 }
 
-async fn process_chunk(mut receiver: watch::Receiver<Vec<u8>>, sender: mpsc::Sender<HashMap<String, Results>>, id: usize) {
+async fn process_chunk(rx: async_channel::Receiver<Chunk>, thread_id: usize) {
     
-    while !receiver.changed().await.is_err() {
-        let chunk = receiver.borrow_and_update().to_owned();
-        let sender_cell = sender.clone();
-        
-        let (send, recv) = oneshot::channel();
+    while let Ok(msg) = rx.recv().await {
+        //let msg = rx.recv().await.expect("error");
+        info!("sender count {}, recieiver count {}", rx.sender_count(), rx.receiver_count());
+
+        let (completion_tx, completion_rx) = oneshot::channel();
+
         rayon::spawn( move || {
             
-            info!("Thread {}: Processing chunk with size {}", id, chunk.len());
+            info!("Thread {}: Processing chunk {}", thread_id, msg.id);
             
-            let lines = chunk.lines();
+            let lines = msg.chunk.lines();
             let mut city_map: HashMap<String, Results> = HashMap::new();
             
             for line in lines {
@@ -112,12 +120,11 @@ async fn process_chunk(mut receiver: watch::Receiver<Vec<u8>>, sender: mpsc::Sen
             }
 
             //let sorted_results: BTreeMap<String, Results> = city_map.into_iter().collect();
-            let _ = send.send(city_map);
+            let _ = completion_tx.send(());
         });
-        let test: HashMap<String, Results> = recv.await.expect("error");
-        sender_cell.send(test).await.expect("Error sending");
-        drop(sender_cell);
-    } 
+
+        let _ = completion_rx.await;
+    }
 }
 
 async fn combined_results(mut receiver: mpsc::Receiver<HashMap<String, Results>>){
@@ -129,9 +136,7 @@ async fn combined_results(mut receiver: mpsc::Receiver<HashMap<String, Results>>
         for (k, v) in result{
             if final_results.contains_key(&k){
                 let final_result = final_results.get_mut(&k).unwrap();
-                if k == "İzmir"{
-                    error!("Temp = {}", v.min);
-                }
+                
                 if v.min < final_result.min {
                     final_result.min = v.min;
                 }
@@ -184,45 +189,35 @@ fn print_results(results: BTreeMap<String, Results>){
 
 }
 
-// async fn print_u8_array(mut receiver: mpsc::Receiver<Vec<u8>>){
-//     while let Some(value) = receiver.recv().await {
-//         if let Ok(string) = std::str::from_utf8(&value) {
-//             print!("{}", string);
-//         } else {
-//             println!("Invalid UTF-8 data");
-//         }
-//     }
-// }
-
 #[tokio::main]
 async fn main(){
     let start_time = Instant::now();
-    let path = "data/measurements_4.txt";
-    simple_logger::init_with_level(Level::Debug).unwrap();
-
-    let file_sender = watch::channel(Vec::new());
-    let (result_sender, mut result_receiver) = mpsc::channel(5000);
-
-    let processing_receivers: Vec<_> = (0..THREAD_COUNT)
-        .map(|id| {
-            let processing_receiver = file_sender.1.clone();
-            task::spawn(process_chunk(processing_receiver, result_sender.clone(), id))
-        })
-        .collect();
-
-    let read_task = task::spawn(read_file(path, file_sender.0));
-    let result_combined_task = task::spawn(combined_results(result_receiver));
+    let path = "data/measurements_1b.txt";
+    simple_logger::init_with_level(Level::Error).unwrap();
     
-    drop(result_sender);
+    //let (file_tx, mut file_rx) = mpsc::channel(100);
+    let (chunk_tx, chunk_rx) = async_channel::unbounded();
 
-    let _ = tokio::join!(read_task, result_combined_task, async {
-        for handle in processing_receivers {
+    chunk_tx.downgrade();
+
+    let mut handles = vec![];
+
+    for thread_id in 0..THREAD_COUNT {
+        let rx_clone = chunk_rx.clone();
+        let handle = tokio::spawn(async move {
+            process_chunk(rx_clone, thread_id).await;
+        });
+        handles.push(handle);
+    }
+
+    let read_task = task::spawn(read_file(path, chunk_tx));
+
+    let _ = tokio::join!(read_task, async {
+        for handle in handles {
             handle.await.expect("Thread join error");
             
         }
     });
-
-    
 
     let end_time = Instant::now();
     let elapsed_time = end_time.duration_since(start_time);
