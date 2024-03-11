@@ -19,10 +19,10 @@ struct Chunk {
     chunk: Vec<u8>
 }
 
-const READ_BUFFER_SIZE_KB: usize = 8;
+const READ_BUFFER_SIZE_KB: usize = 128;
 const CHUNK_SIZE_KB: usize = 128;
-const THREAD_COUNT: usize = 8;
-const CHANNEL_BUFFER_SIZE: usize = 7500;
+const THREAD_COUNT: usize = 2;
+const CHANNEL_BUFFER_SIZE: usize = 32;
 
 
 async fn read_file(path: &str, tx: async_channel::Sender<Chunk>) {
@@ -102,18 +102,18 @@ async fn process_chunk(rx: async_channel::Receiver<Chunk>, result_tx: async_chan
                     max: f32::NEG_INFINITY,
                     sum: 0.0,
                     count: 0,
-            });
+                });
 
-            if temp < current_measurement.min {
-                current_measurement.min = temp;
-            }
+                if temp < current_measurement.min {
+                    current_measurement.min = temp;
+                }
 
-            if temp > current_measurement.max {
-                current_measurement.max = temp;
-            }
+                if temp > current_measurement.max {
+                    current_measurement.max = temp;
+                }
 
-            current_measurement.sum += temp;
-            current_measurement.count += 1;
+                current_measurement.sum += temp;
+                current_measurement.count += 1;
 
             }
 
@@ -194,7 +194,7 @@ async fn main(){
     let path = "data/measurements_1b.txt";
     simple_logger::init_with_level(Level::Error).unwrap();
     
-    let mem_estimate = (CHUNK_SIZE_KB * CHANNEL_BUFFER_SIZE) / 1000;
+    let mem_estimate = (CHUNK_SIZE_KB * CHANNEL_BUFFER_SIZE) / 1024;
     error!("Starting: Reader Buffer Size: {} KB, Chunk Size: {} KB, Estimated RAM Usage: {} MB, Thread Count: {}", READ_BUFFER_SIZE_KB, CHUNK_SIZE_KB, mem_estimate, THREAD_COUNT);
 
     let (chunk_tx, chunk_rx) = async_channel::bounded(CHANNEL_BUFFER_SIZE);
