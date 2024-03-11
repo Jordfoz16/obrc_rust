@@ -1,4 +1,5 @@
 /data
 /target
+/sampling
 Cargo.lock
 .DS_Store

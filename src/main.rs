@@ -2,6 +2,7 @@ use std::fs::File;
 use std::time::Instant;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::collections::{BTreeMap, HashMap};
+use rayon::result;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task;
 use log::{error, info, Level};
@@ -21,7 +22,7 @@ struct Chunk {
 
 const BUFFER_SIZE_KB: usize = 8;
 const CHUNK_SIZE_KB: usize = 256;
-const THREAD_COUNT: usize = 12;
+const THREAD_COUNT: usize = 2;
 
 async fn read_file(path: &str, tx: async_channel::Sender<Chunk>) {
 
@@ -77,8 +78,10 @@ async fn read_file(path: &str, tx: async_channel::Sender<Chunk>) {
     }
 }
 
-async fn process_chunk(rx: async_channel::Receiver<Chunk>, thread_id: usize) {
+async fn process_chunk(rx: async_channel::Receiver<Chunk>, result_tx: async_channel::Sender<HashMap<String, Results>>, thread_id: usize) {
     
+    result_tx.downgrade();
+
     while let Ok(msg) = rx.recv().await {
         //let msg = rx.recv().await.expect("error");
         info!("sender count {}, recieiver count {}", rx.sender_count(), rx.receiver_count());
@@ -120,18 +123,22 @@ async fn process_chunk(rx: async_channel::Receiver<Chunk>, thread_id: usize) {
             }
 
             //let sorted_results: BTreeMap<String, Results> = city_map.into_iter().collect();
-            let _ = completion_tx.send(());
+            let _ = completion_tx.send(city_map);
         });
 
-        let _ = completion_rx.await;
+        let result = completion_rx.await.unwrap();
+        let _ = result_tx.send(result).await;
     }
+
+    result_tx.close();
 }
 
-async fn combined_results(mut receiver: mpsc::Receiver<HashMap<String, Results>>){
+async fn combined_results(receiver: async_channel::Receiver<HashMap<String, Results>>){
 
     let mut final_results: HashMap<String, Results> = HashMap::new();
     
-    while let Some(result) = receiver.recv().await {
+    while let Ok(result) = receiver.recv().await {
+        info!("{} {}", receiver.sender_count(), receiver.receiver_count());
         info!("Recieved {:?} results", result.len());
         for (k, v) in result{
             if final_results.contains_key(&k){
@@ -192,11 +199,12 @@ fn print_results(results: BTreeMap<String, Results>){
 #[tokio::main]
 async fn main(){
     let start_time = Instant::now();
-    let path = "data/measurements_1b.txt";
-    simple_logger::init_with_level(Level::Error).unwrap();
+    let path = "data/measurements_1m.txt";
+    simple_logger::init_with_level(Level::Debug).unwrap();
     
     //let (file_tx, mut file_rx) = mpsc::channel(100);
     let (chunk_tx, chunk_rx) = async_channel::unbounded();
+    let (result_tx, result_rx) = async_channel::unbounded();
 
     chunk_tx.downgrade();
 
@@ -204,15 +212,17 @@ async fn main(){
 
     for thread_id in 0..THREAD_COUNT {
         let rx_clone = chunk_rx.clone();
+        let results_clone = result_tx.clone();
         let handle = tokio::spawn(async move {
-            process_chunk(rx_clone, thread_id).await;
+            process_chunk(rx_clone, results_clone, thread_id).await;
         });
         handles.push(handle);
     }
 
     let read_task = task::spawn(read_file(path, chunk_tx));
+    let combined_task = task::spawn(combined_results(result_rx));
 
-    let _ = tokio::join!(read_task, async {
+    let _ = tokio::join!(read_task, combined_task, async {
         for handle in handles {
             handle.await.expect("Thread join error");
             
