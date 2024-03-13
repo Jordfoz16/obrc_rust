@@ -19,10 +19,10 @@ struct Chunk {
     chunk: Vec<u8>
 }
 
-const READ_BUFFER_SIZE_KB: usize = 128;
-const CHUNK_SIZE_KB: usize = 128;
-const THREAD_COUNT: usize = 2;
-const CHANNEL_BUFFER_SIZE: usize = 32;
+const READ_BUFFER_SIZE_KB: usize = 16;
+const CHUNK_SIZE_KB: usize = 1024;
+const THREAD_COUNT: usize = 12;
+const CHANNEL_BUFFER_SIZE: usize = 100;
 
 
 async fn read_file(path: &str, tx: async_channel::Sender<Chunk>) {
