@@ -191,7 +191,7 @@ fn print_results(results: BTreeMap<String, Results>){
 #[tokio::main]
 async fn main(){
     let start_time = Instant::now();
-    let path = "data/measurements_1b.txt";
+    let path = "data/measurements_10m.txt";
     simple_logger::init_with_level(Level::Error).unwrap();
     
     let mem_estimate = (CHUNK_SIZE_KB * CHANNEL_BUFFER_SIZE) / 1024;
