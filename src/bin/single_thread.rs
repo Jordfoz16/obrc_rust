@@ -178,8 +178,8 @@ fn process_chunk2(rx: Chunk<CHUNK_SIZE_KB>,  result_tx: &mut HashMap<String, Res
 fn process_chunk3(rx: Chunk<CHUNK_SIZE_KB>,  result_tx: &mut HashMap<String, Results>){
 
 
-    let mut city_map = result_tx;
-    let mut split_test = rx.chunk.split(|num| num == &10)
+    let city_map = result_tx;
+    let split_test = rx.chunk.split(|num| num == &10)
     .map(|a| {
         let binding = String::from_utf8(a.to_vec()).unwrap();
         let mut split_line = binding.split(|c| c == ';');
@@ -216,7 +216,7 @@ fn process_chunk3(rx: Chunk<CHUNK_SIZE_KB>,  result_tx: &mut HashMap<String, Res
     });
 
     for i in split_test {
-        //println!("{}", i.unwrap());
+
     }
 }
 
@@ -254,7 +254,7 @@ fn main() {
     let start_time = Instant::now();
 
     //let lines: Lines<BufReader<File>> = read_file();
-    let path = "data/measurements_1m.txt";
+    let path = "data/measurements_10m.txt";
     let results = read_file(path);
 
     //let results: HashMap<String, Results> = calculate(lines);

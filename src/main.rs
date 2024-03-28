@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use tokio::sync::oneshot;
 use tokio::task;
 use log::{error, info, Level};
+use ahash::AHashMap;
 
 
 struct Results {
@@ -75,7 +76,7 @@ async fn read_file(path: &str, tx: async_channel::Sender<Chunk>) {
     }
 }
 
-async fn process_chunk(rx: async_channel::Receiver<Chunk>, result_tx: async_channel::Sender<HashMap<String, Results>>, thread_id: usize) {
+async fn process_chunk(rx: async_channel::Receiver<Chunk>, result_tx: async_channel::Sender<AHashMap<String, Results>>, thread_id: usize) {
     
     result_tx.downgrade();
 
@@ -88,7 +89,7 @@ async fn process_chunk(rx: async_channel::Receiver<Chunk>, result_tx: async_chan
             info!("Thread {}: Processing chunk {}", thread_id, msg.id);
             
             let lines = msg.chunk.lines();
-            let mut city_map: HashMap<String, Results> = HashMap::new();
+            let mut city_map: AHashMap<String, Results> = AHashMap::new();
             
             for line in lines {
                 let line_string = line.unwrap();
@@ -127,9 +128,9 @@ async fn process_chunk(rx: async_channel::Receiver<Chunk>, result_tx: async_chan
     result_tx.close();
 }
 
-async fn combined_results(receiver: async_channel::Receiver<HashMap<String, Results>>){
+async fn combined_results(receiver: async_channel::Receiver<AHashMap<String, Results>>){
 
-    let mut final_results: HashMap<String, Results> = HashMap::new();
+    let mut final_results: AHashMap<String, Results> = AHashMap::new();
     
     while let Ok(result) = receiver.recv().await {
         info!("Recieved {:?} results", result.len());
@@ -191,7 +192,7 @@ fn print_results(results: BTreeMap<String, Results>){
 #[tokio::main]
 async fn main(){
     let start_time = Instant::now();
-    let path = "data/measurements_10m.txt";
+    let path = "data/measurements_1b.txt";
     simple_logger::init_with_level(Level::Error).unwrap();
     
     let mem_estimate = (CHUNK_SIZE_KB * CHANNEL_BUFFER_SIZE) / 1024;
