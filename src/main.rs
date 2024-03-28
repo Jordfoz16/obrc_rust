@@ -88,17 +88,17 @@ async fn process_chunk(rx: async_channel::Receiver<Chunk>, result_tx: async_chan
             
             info!("Thread {}: Processing chunk {}", thread_id, msg.id);
             
-            let lines = msg.chunk.lines();
+            //let lines = msg.chunk.lines();
             let mut city_map: AHashMap<String, Results> = AHashMap::new();
             
-            for line in lines {
+            for line in msg.chunk.lines() {
                 let line_string = line.unwrap();
                 let mut split_line = line_string.split(";");
 
                 let city = split_line.next().unwrap().to_string();
                 let temp: f32 = split_line.next().unwrap().parse().unwrap();
 
-                let current_measurement = city_map.entry(city.clone()).or_insert(Results {
+                let current_measurement = city_map.entry(city).or_insert(Results {
                     min: f32::INFINITY,
                     max: f32::NEG_INFINITY,
                     sum: 0.0,
